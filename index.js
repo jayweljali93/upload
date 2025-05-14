@@ -1,33 +1,31 @@
 const express = require('express');
 const mongoose = require('mongoose');
 const multer = require('multer');
-const Grid = require('gridfs-stream');
-const { GridFsStorage } = require('multer-gridfs-storage');
 const cors = require('cors');
+const fs = require('fs');
 const path = require('path');
 
 const app = express();
 app.use(cors());
 app.use(express.json());
 
-// MongoDB URI
+// MongoDB connection
 const mongoURI = 'mongodb+srv://jayeshweljali93:hPNwYhHN1a0VnEf8@cluster0.cuj8wqb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
-
-// Connect to MongoDB
 const conn = mongoose.createConnection(mongoURI, {
+  dbName: 'projects',
   useNewUrlParser: true,
   useUnifiedTopology: true,
 });
 
-// Init gfs
 let gfs;
 conn.once('open', () => {
-  gfs = Grid(conn.db, mongoose.mongo);
-  gfs.collection('uploads');
-  console.log('✅ MongoDB connected and GridFS initialized');
+  gfs = new mongoose.mongo.GridFSBucket(conn.db, {
+    bucketName: 'uploads',
+  });
+  console.log('✅ MongoDB connected & GridFSBucket ready');
 });
 
-// Schema
+// Schema and model
 const projectSchema = new mongoose.Schema({
   title: String,
   description: String,
@@ -35,67 +33,63 @@ const projectSchema = new mongoose.Schema({
   fileId: mongoose.Schema.Types.ObjectId,
   createdAt: { type: Date, default: Date.now },
 });
-const Project = mongoose.model('Project', projectSchema);
+const Project = conn.model('Project', projectSchema);
 
-// Storage engine
-const storage = new GridFsStorage({
-  url: mongoURI,
-  file: (req, file) => {
-    return new Promise((resolve, reject) => {
-      const ext = path.extname(file.originalname);
-      if (ext !== '.zip') {
-        return reject(new Error('Only ZIP files are allowed.'));
-      }
+// Multer file upload to temp directory
+const upload = multer({ dest: 'temp/' });
 
-      resolve({
-        filename: `${Date.now()}-${file.originalname}`,
-        bucketName: 'uploads',
-      });
-    });
-  },
-});
-const upload = multer({ storage });
+// Upload endpoint
+app.post('/upload', upload.single('file'), async (req, res) => {
+  if (!req.file || path.extname(req.file.originalname) !== '.zip') {
+    fs.unlinkSync(req.file.path); // remove temp file
+    return res.status(400).json({ error: 'Only .zip files allowed' });
+  }
 
-// Upload route
-app.post('/upload', (req, res, next) => {
-  upload.single('file')(req, res, async (err) => {
-    if (err) {
-      return res.status(400).json({ error: err.message });
-    }
-    if (!req.file) {
-      return res.status(400).json({ error: 'No file uploaded or invalid file format (must be .zip).' });
-    }
+  const { title, description, price } = req.body;
 
-    const { title, description, price } = req.body;
-
-    try {
-      const project = new Project({
-        title,
-        description,
-        price: parseFloat(price),
-        fileId: req.file.id,
-      });
-      await project.save();
-      res.status(200).json({ message: '✅ File uploaded and saved', project });
-    } catch (error) {
-      console.error(error);
-      res.status(500).json({ error: 'Error saving project metadata.' });
-    }
+  const readStream = fs.createReadStream(req.file.path);
+  const uploadStream = gfs.openUploadStream(req.file.originalname, {
+    contentType: 'application/zip',
   });
+
+  readStream.pipe(uploadStream)
+    .on('error', (err) => {
+      fs.unlinkSync(req.file.path);
+      console.error(err);
+      res.status(500).json({ error: 'Upload failed' });
+    })
+    .on('finish', async () => { // Removed 'uploadedFile' argument
+      fs.unlinkSync(req.file.path);
+      console.log('File uploaded to MongoDB:', uploadStream.id); // Access _id from uploadStream
+      try {
+        const project = new Project({
+          title,
+          description,
+          price: parseFloat(price),
+          fileId: uploadStream.id, // Use uploadStream.id
+        });
+        await project.save();
+
+        res.status(200).json({ message: '✅ Uploaded and saved', project });
+      } catch (err) {
+        console.log(err);
+        res.status(500).json({ error: 'Metadata save failed' });
+      }
+    });
 });
 
-// Download by ID
-app.get('/download/:id', async (req, res) => {
+// Download endpoint
+app.get('/download/:id', (req, res) => {
   try {
-    const file = await gfs.files.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
-    if (!file) return res.status(404).json({ error: 'File not found' });
+    const fileId = new mongoose.mongo.ObjectId(req.params.id);
 
-    const readstream = gfs.createReadStream(file.filename);
-    res.set('Content-Type', file.contentType || 'application/zip');
-    res.set('Content-Disposition', `attachment; filename="${file.filename}"`);
-    readstream.pipe(res);
+    gfs.openDownloadStream(fileId)
+      .on('error', (err) => {
+        res.status(404).json({ error: 'File not found' });
+      })
+      .pipe(res);
   } catch (err) {
-    console.error(err);
+    
     res.status(500).json({ error: 'Download failed' });
   }
 });
@@ -106,11 +100,10 @@ app.get('/projects', async (req, res) => {
     const projects = await Project.find().sort({ createdAt: -1 });
     res.json(projects);
   } catch (err) {
-    res.status(500).json({ error: 'Failed to fetch projects.' });
+    res.status(500).json({ error: 'Failed to fetch projects' });
   }
 });
 
-// Start
 const PORT = 5000;
 app.listen(PORT, () => {
   console.log(`🚀 Server running at http://localhost:${PORT}`);
