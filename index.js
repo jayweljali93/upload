@@ -11,7 +11,7 @@ app.use(cors());
 app.use(express.json());
 
 // MongoDB URI
-const mongoURI = 'mongodb://localhost:27017/studentProjects';
+const mongoURI = 'mongodb+srv://jayeshweljali93:hPNwYhHN1a0VnEf8@cluster0.cuj8wqb.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0';
 
 // Connect to MongoDB
 const conn = mongoose.createConnection(mongoURI, {
