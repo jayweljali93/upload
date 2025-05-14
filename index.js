@@ -1,5 +1,3 @@
-// server.js
-
 const express = require('express');
 const mongoose = require('mongoose');
 const multer = require('multer');
@@ -19,19 +17,14 @@ const mongoURI = 'mongodb://localhost:27017/studentProjects';
 const conn = mongoose.createConnection(mongoURI, {
   useNewUrlParser: true,
   useUnifiedTopology: true,
-}).then((result) => {
-    console.log('✅ MongoDB connected');
-    
-}).catch((err) => {
-    console.error('❌ MongoDB connection error:', err);
-});;
+});
 
 // Init GridFS
 let gfs;
 conn.once('open', () => {
   gfs = Grid(conn.db, mongoose.mongo);
   gfs.collection('uploads');
-  console.log('✅ GridFS initialized');
+  console.log('✅ MongoDB connected and GridFS initialized');
 });
 
 // MongoDB schema for project metadata
@@ -44,7 +37,7 @@ const projectSchema = new mongoose.Schema({
 });
 const Project = mongoose.model('Project', projectSchema);
 
-// Storage engine for GridFS using multer-gridfs-storage
+// Storage engine using multer-gridfs-storage
 const storage = new GridFsStorage({
   url: mongoURI,
   file: (req, file) => {
@@ -53,13 +46,13 @@ const storage = new GridFsStorage({
     }
     return {
       filename: `${Date.now()}-${file.originalname}`,
-      bucketName: 'uploads', // should match gfs.collection()
+      bucketName: 'uploads',
     };
   },
 });
 const upload = multer({ storage });
 
-// Upload ZIP file and save metadata
+// Upload endpoint
 app.post('/upload', upload.single('file'), async (req, res) => {
   const { title, description, price } = req.body;
   if (!req.file) {
@@ -70,7 +63,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
     const project = new Project({
       title,
       description,
-      price,
+      price: parseFloat(price),
       fileId: req.file.id,
     });
     await project.save();
@@ -81,7 +74,7 @@ app.post('/upload', upload.single('file'), async (req, res) => {
   }
 });
 
-// Download ZIP by file ID
+// Download by file ID
 app.get('/download/:id', async (req, res) => {
   try {
     const file = await gfs.files.findOne({ _id: new mongoose.Types.ObjectId(req.params.id) });
@@ -99,8 +92,12 @@ app.get('/download/:id', async (req, res) => {
 
 // List all uploaded projects
 app.get('/projects', async (req, res) => {
-  const projects = await Project.find().sort({ createdAt: -1 });
-  res.json(projects);
+  try {
+    const projects = await Project.find().sort({ createdAt: -1 });
+    res.json(projects);
+  } catch (err) {
+    res.status(500).json({ error: 'Failed to fetch projects.' });
+  }
 });
 
 // Start server
