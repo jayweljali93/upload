@@ -79,17 +79,43 @@ app.post('/upload', upload.single('file'), async (req, res) => {
 });
 
 // Download endpoint
-app.get('/download/:id', (req, res) => {
+app.get('/download/:id', async (req, res) => {
   try {
     const fileId = new mongoose.mongo.ObjectId(req.params.id);
 
-    gfs.openDownloadStream(fileId)
-      .on('error', (err) => {
-        res.status(404).json({ error: 'File not found' });
-      })
-      .pipe(res);
+    // Find the associated project to get the title
+    const project = await Project.findOne({ fileId: fileId }); // Assuming your Project model has 'fileId'
+
+    if (!project) {
+      return res.status(404).json({ error: 'Project not found for this file' });
+    }
+
+    const downloadStream = gfs.openDownloadStream(fileId);
+
+    if (!downloadStream) {
+      return res.status(404).json({ error: 'File not found in GridFS' });
+    }
+
+    // Set the Content-Disposition header with the project title as the filename
+    res.setHeader('Content-Disposition', `attachment; filename="${project.title}.zip"`); // Assuming you have fileType in your Project model
+
+    // Optionally, set the Content-Type based on GridFS metadata
+    const files = await gfs.find({ _id: fileId }).toArray();
+    if (files && files.length > 0 && files[0].contentType) {
+      res.setHeader('Content-Type', files[0].contentType);
+    }
+
+    downloadStream.pipe(res);
+
+    downloadStream.on('error', (err) => {
+      console.error('Error during download stream:', err);
+      if (!res.headersSent) {
+        res.status(500).json({ error: 'Error streaming file' });
+      }
+    });
+
   } catch (err) {
-    
+    console.error('Error in download route:', err);
     res.status(500).json({ error: 'Download failed' });
   }
 });
